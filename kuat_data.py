@@ -1,11 +1,14 @@
 from selenium import webdriver
+from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import time
-from openpyxl import Workbook
-import os
 
+def wait_for_element(driver, by, value, timeout=10):
+    WebDriverWait(driver, timeout).until(EC.presence_of_element_located((by, value)))
 
 def scrape_product_page(driver, url):
     driver.get(url)
@@ -23,8 +26,7 @@ def scrape_product_page(driver, url):
 
     # Extract manufacturer part number
     part_number_elem = soup.select_one('div[id^="ra-catalog-accordion-"] li:-soup-contains("Mfg. Part Number:")')
-    part_number = part_number_elem.text.strip().replace('Mfg. Part Number: ',
-                                                        '') if part_number_elem else "Part number not found"
+    part_number = part_number_elem.text.strip().replace('Mfg. Part Number: ', '') if part_number_elem else "Part number not found"
 
     # Extract key features (dynamic content)
     key_features = []
@@ -36,14 +38,12 @@ def scrape_product_page(driver, url):
     key_features_html = "<ul>" + "".join(f"<li>{feature}</li>" for feature in key_features) + "</ul>"
 
     # Extract specs
-    specs = []
+    specs = {}
     specs_elems = soup.select('div[id^="ra-catalog-accordion-"] li.content-secondary')
     for elem in specs_elems:
-        key_elem = elem.select_one('.content-primary')
-        if key_elem:
-            key = key_elem.text.strip().replace(':', '')
-            value = elem.text.replace(key_elem.text + ':', '').strip()
-            specs.append((key, value))
+        key = elem.select_one('.content-primary').text.strip().replace(':', '')
+        value = elem.text.replace(key + ':', '').strip()
+        specs[key] = value
 
     return {
         "title": title,
@@ -52,7 +52,6 @@ def scrape_product_page(driver, url):
         "key_features_html": key_features_html,
         "specs": specs
     }
-
 
 def scrape_all_pages():
     base_url = "https://rackattack.com/kuat"
@@ -67,67 +66,49 @@ def scrape_all_pages():
             print(f"Scraping page {page}...")
 
             driver.get(url)
-            time.sleep(3)  # Adjust sleep time if necessary
+            wait_for_element(driver, By.CSS_SELECTOR, 'a.ra-product-card__top')  # Wait for the product links to be present
+
+            # Allow some extra time for content to load
+            time.sleep(2)
 
             soup = BeautifulSoup(driver.page_source, 'html.parser')
-
+            # Ensure we capture the correct product links
             links = soup.select('a.ra-product-card__top')
             if not links:
                 links = soup.select('div.product-item a')
             if not links:
                 links = soup.select('div.item-box a')
 
+            unique_links = set()
             for link in links:
                 product_url = link.get('href')
                 if product_url:
                     if not product_url.startswith('http'):
                         product_url = 'https://rackattack.com' + product_url
-                    print(f"Scraping product: {product_url}")
-                    product_info = scrape_product_page(driver, product_url)
-                    all_products.append(product_info)
-                    time.sleep(1)  # Delay between product page requests
+                    if product_url not in unique_links:
+                        unique_links.add(product_url)
+                        print(f"Scraping product: {product_url}")
+                        product_info = scrape_product_page(driver, product_url)
+                        all_products.append(product_info)
+                        time.sleep(1)  # Delay between product page requests
 
-            time.sleep(2)  # Delay between page requests
+            # Allow some time before moving to the next page
+            time.sleep(2)
 
     finally:
         driver.quit()
 
     return all_products
 
-
-def save_to_excel(data, filename='kuat_product_data.xlsx'):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = 'Products'
-
-    # Write header for product details
-    ws.append(['Title', 'Overview', 'Part Number', 'Key Features (HTML)', 'Name', 'Value'])
-
-    # Write data
-    for product in data:
-        title = product['title']
-        overview = product['overview']
-        part_number = product['part_number']
-        key_features_html = product['key_features_html']
-
-        if product['specs']:
-            for name, value in product['specs']:
-                ws.append([title, overview, part_number, key_features_html, name, value])
-        else:
-            # If there are no specs, still create a row with empty 'Name' and 'Value'
-            ws.append([title, overview, "KUA"+part_number, key_features_html, '', ''])
-
-    # Save the workbook to the same directory as the script
-    try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_dir, filename)
-        wb.save(file_path)
-        print(f"Data successfully saved to {file_path}")
-    except Exception as e:
-        print(f"An error occurred while saving to Excel: {e}")
-
-
-# Run the scraper and save results
+# Run the scraper
 product_details = scrape_all_pages()
+
+# Print the results in <ul><li></li></ul> format
 print(f"Total products found: {len(product_details)}")
-save_to_excel(product_details)
+for product in product_details:
+    print("\nTitle:", product['title'])
+    print("Overview:", product['overview'])
+    print("Part Number:", product['part_number'])
+    print("Key Features (HTML):", product['key_features_html'])
+    print("Specs:", product['specs'])
+    print("-" * 50)
